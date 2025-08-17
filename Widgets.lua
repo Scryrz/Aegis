@@ -3,6 +3,7 @@ Widgets.lua
 Author: Ayr
 Notes:
  - UPDATE: Column headers now display in yellow; Realms table no longer shows a "Name" column.
+ - UPDATE: Settings > Lists editors (Types & Categories) now appear side-by-side.
 -----------------------------------------------------------------------------]]--
 
 local addonName = ...
@@ -95,7 +96,6 @@ local function buildTopControls(container, scope)
             local name = ebName:GetText()
             if name and name ~= "" then
                 ADDON:AddPlayer(name, ebReason:GetText(), { type = ddType:GetValue(), category = ddCat:GetValue() })
-                -- Force immediate refresh of the current tab
                 container:Fire("Aegis_Refresh")
             end
         end)
@@ -218,7 +218,6 @@ local function buildTable(container, scope)
         for _, realm in ipairs(keys) do
             local v = ADDON.db.profile.realms[realm]
             local dateStr = (v.addedAtStr and v.addedAtStr ~= "") and v.addedAtStr or fmtDateTime(v.addedAtTS or v.addedAt)
-            -- No "Name" cell; columns match COLS_REALMS
             local rowVals = { realm, v.type or "N/A", v.category or "N/A", dateStr or "", v.reason or "" }
             local row = AceGUI:Create("SimpleGroup"); row:SetLayout("Flow"); row:SetFullWidth(true)
             for i=1,#rowVals do local lab=AceGUI:Create("Label"); lab:SetText(rowVals[i]); lab:SetWidth(widths[i]); row:AddChild(lab) end
@@ -247,27 +246,31 @@ local function refreshSettings(container)
     cbTT:SetCallback("OnValueChanged", function(_,_,val) ADDON.db.profile.settings.showTooltips = not not val end)
     grp:AddChild(cbTT)
 
-    local note = AceGUI:Create("Label"); note:SetFullWidth(true)
-    note:SetText("|cffaaaaaaLFG highlight color is fixed to red.|r")
-    grp:AddChild(note)
-
     container:AddChild(grp)
 
-    -- Lists editor
+    -- Lists editor (side-by-side)
     local lst = AceGUI:Create("InlineGroup"); lst:SetTitle("Lists (extensible)"); lst:SetFullWidth(true); lst:SetLayout("Flow"); container:AddChild(lst)
 
     local function buildListEditor(label, key)
-        local box = AceGUI:Create("InlineGroup"); box:SetTitle(label); box:SetLayout("Flow"); box:SetFullWidth(true)
-        local eb = AceGUI:Create("MultiLineEditBox"); eb:SetLabel("Values (one per line)"); eb:SetNumLines(6); eb:SetFullWidth(true)
-        eb:SetText(table.concat(ADDON.db.profile.settings.lists[key] or {}, "\n")); box:AddChild(eb)
+        local box = AceGUI:Create("InlineGroup"); box:SetTitle(label); box:SetLayout("Flow")
+        box:SetRelativeWidth(0.5)                     -- side-by-side columns
+        local eb = AceGUI:Create("MultiLineEditBox")
+        eb:SetLabel("Values (one per line)")
+        eb:SetNumLines(6)
+        eb:SetFullWidth(true)                         -- fill the half-width box
+        eb:SetText(table.concat(ADDON.db.profile.settings.lists[key] or {}, "\n"))
+        box:AddChild(eb)
         local btn = AceGUI:Create("Button"); btn:SetText("Save"); btn:SetWidth(100)
         btn:SetCallback("OnClick", function()
             local text = eb:GetText() or ""; local list = {}
-            for line in text:gmatch("[^\r\n]+") do table.insert(list, (line:gsub("^%s+",""):gsub('%s+$',''))) end
+            for line in text:gmatch("[^\r\n]+") do
+                table.insert(list, (line:gsub("^%s+",""):gsub('%s+$','')))
+            end
             ADDON.db.profile.settings.lists[key] = list
             if ADDON.Print then ADDON:Print(("Updated %s list (%d values)."):format(label, #list)) end
         end)
-        box:AddChild(btn); return box
+        box:AddChild(btn)
+        return box
     end
     lst:AddChild(buildListEditor("Types", "types"))
     lst:AddChild(buildListEditor("Categories", "categories"))
