@@ -1,6 +1,6 @@
 --[[-----------------------------------------------------------------------------
-Aegis - Core.lua
-Single-source tooltip injection patterned after Archon Tooltips.
+Widgets.lua
+Author: Ayr
 -----------------------------------------------------------------------------]]--
 
 local addonName = ...
@@ -63,6 +63,13 @@ function AGS:GuildKey(guildName, realm) realm = realm or GetPlayerRealm(); retur
 local function now() return time() end
 local function fmt(ts) return date("%Y-%m-%d %H:%M", ts or time()) end -- 24h format
 
+-- fire a lightweight message that UIs can listen to
+local function NotifyDBChanged(self, scope, op, key)
+  if self.SendMessage then
+    self:SendMessage("Aegis_DB_UPDATED", { scope = scope, op = op, key = key })
+  end
+end
+
 -- =============================================================================
 -- Query / Mutate
 -- =============================================================================
@@ -117,6 +124,7 @@ function AGS:AddPlayer(name, reason, meta)
   applyDefaultsForMeta(self, e)
   self.db.profile.players[normalized] = e
   self:Print(("Player %s added to blacklist."):format(normalized))
+  NotifyDBChanged(self, "players", "add", normalized)
   self:RefreshLFGHighlights()
 end
 
@@ -124,6 +132,7 @@ function AGS:RemovePlayer(name)
   local normalized = self:NormalizePlayerName(name); if not normalized then return end
   self.db.profile.players[normalized] = nil
   self:Print(("Player %s removed from blacklist."):format(normalized))
+  NotifyDBChanged(self, "players", "remove", normalized)
   self:RefreshLFGHighlights()
 end
 
@@ -140,6 +149,7 @@ function AGS:AddRealm(realmName, reason, meta)
   applyDefaultsForMeta(self, e)
   self.db.profile.realms[realm] = e
   self:Print(("Realm %s added to blacklist."):format(realm))
+  NotifyDBChanged(self, "realms", "add", realm)
   self:RefreshLFGHighlights()
 end
 
@@ -147,6 +157,7 @@ function AGS:RemoveRealm(realmName)
   local realm = self:NormalizeRealm(realmName); if realm == "" then return end
   self.db.profile.realms[realm] = nil
   self:Print(("Realm %s removed from blacklist."):format(realm))
+  NotifyDBChanged(self, "realms", "remove", realm)
   self:RefreshLFGHighlights()
 end
 
@@ -163,6 +174,7 @@ function AGS:AddGuild(guildName, realmName, reason, meta)
   initTimestampFields(g, prev)
   applyDefaultsForMeta(self, g)
   self:Print(("Guild %s added/updated in blacklist."):format(gkey))
+  NotifyDBChanged(self, "guilds", "add", gkey)
   self:RefreshLFGHighlights()
 end
 
@@ -170,6 +182,7 @@ function AGS:RemoveGuild(guildName, realmName)
   local gkey = self:GuildKey(guildName, realmName)
   self.db.profile.guilds[gkey] = nil
   self:Print(("Guild %s removed from blacklist."):format(gkey))
+  NotifyDBChanged(self, "guilds", "remove", gkey)
   self:RefreshLFGHighlights()
 end
 
@@ -248,12 +261,12 @@ function AGS:HandleSlash(input)
   input = input and (input:gsub('^%s+',''):gsub('%s+$','')) or ""
   if input == "" or input == "help" then
     self:Print("Commands:")
-    self:Print("/aegis ui")
-    self:Print('/aegis add player Name-Realm [reason]')
-    self:Print('/aegis add guild "Guild Name" [Realm] [reason]')
-    self:Print('/aegis add realm RealmName [reason]')
-    self:Print('/aegis remove player|guild|realm <key>')
-    self:Print('/aegis list [players|guilds|realms]')
+    self:Print(" /aegis ui")
+    self:Print(' /aegis add player Name-Realm [reason]')
+    self:Print(' /aegis add guild "Guild Name" [Realm] [reason]')
+    self:Print(' /aegis add realm RealmName [reason]')
+    self:Print(' /aegis remove player|guild|realm <key>')
+    self:Print(' /aegis list [players|guilds|realms]')
     return
   end
   if input == "ui" then self:OpenUI(); return end
@@ -261,7 +274,7 @@ function AGS:HandleSlash(input)
 end
 
 -- =============================================================================
--- LFG highlighting overlays
+-- LFG highlighting + name prefix tags
 -- =============================================================================
 local function getOverlay(frame)
   if not frame then return end
@@ -281,6 +294,65 @@ function AGS:SetOverlay(frame, enabled)
   else
     t:Hide()
   end
+end
+
+-- Try to locate the FontString that shows the group name for robust anchoring.
+local function AcquireSearchRowNameFS(row)
+  if row.Aegis_NameFS and row.Aegis_NameFS.GetText then return row.Aegis_NameFS end
+
+  local candidates = {}
+
+  local function push(fs)
+    if fs and fs.GetObjectType and fs:GetObjectType() == "FontString" then
+      table.insert(candidates, fs)
+    end
+  end
+
+  -- Common fields across templates/patches
+  push(row.Name)
+  push(row.ActivityName)
+  if row.DataDisplay then
+    push(row.DataDisplay.Name)
+    push(row.DataDisplay.ActivityName)
+  end
+
+  -- Fallback: first visible FontString region
+  if #candidates == 0 and row.GetRegions then
+    local i = 1
+    while true do
+      local r = select(i, row:GetRegions())
+      if not r then break end
+      if r.GetObjectType and r:GetObjectType() == "FontString" and r:IsShown() then
+        table.insert(candidates, r)
+      end
+      i = i + 1
+    end
+  end
+
+  row.Aegis_NameFS = candidates[1]
+  return row.Aegis_NameFS
+end
+
+-- Show/Hide a red "BLACKLISTED" prefix near the group name.
+function AGS:UpdateSearchRowPrefix(row, isBlacklisted)
+  if not row then return end
+
+  local tag = row.Aegis_BLTag
+  if not tag then
+    tag = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    tag:SetText("|cffff2020BLACKLISTED|r")
+    tag:SetJustifyH("LEFT")
+    -- prefer anchoring before the name fontstring; otherwise left edge of row
+    local nameFS = AcquireSearchRowNameFS(row)
+    if nameFS then
+      tag:SetPoint("RIGHT", nameFS, "LEFT", -4, 0)
+    else
+      tag:SetPoint("LEFT", row, "LEFT", 6, 0)
+    end
+    row.Aegis_BLTag = tag
+  end
+
+  if isBlacklisted then tag:Show() else tag:Hide() end
 end
 
 function AGS:RefreshLFGHighlights()
@@ -314,10 +386,11 @@ function AGS:RefreshLFGHighlights()
         end
       end
       self:SetOverlay(row, isBL)
+      -- no prefix for applicants; only for search results per requirements
     end)
   end
 
-  -- Search results (leaders)
+  -- Search results (leaders + realm)
   local results = LFGListFrame and LFGListFrame.SearchPanel and LFGListFrame.SearchPanel.ResultsFrame
   if results and results.ScrollBox and results.ScrollBox.ForEachFrame then
     results.ScrollBox:ForEachFrame(function(row)
@@ -340,6 +413,7 @@ function AGS:RefreshLFGHighlights()
         end
       end
       self:SetOverlay(row, isBL)
+      self:UpdateSearchRowPrefix(row, isBL) -- NEW: visible "BLACKLISTED" prefix
     end)
   end
 end
