@@ -1,6 +1,5 @@
 --[[-----------------------------------------------------------------------------
 Aegis - Core.lua
-Single-source tooltip injection patterned after Archon Tooltips.
 -----------------------------------------------------------------------------]]--
 
 local addonName = ...
@@ -63,6 +62,13 @@ function AGS:GuildKey(guildName, realm) realm = realm or GetPlayerRealm(); retur
 local function now() return time() end
 local function fmt(ts) return date("%Y-%m-%d %H:%M", ts or time()) end -- 24h format
 
+-- fire a lightweight message that UIs can listen to
+local function NotifyDBChanged(self, scope, op, key)
+  if self.SendMessage then
+    self:SendMessage("Aegis_DB_UPDATED", { scope = scope, op = op, key = key })
+  end
+end
+
 -- =============================================================================
 -- Query / Mutate
 -- =============================================================================
@@ -117,6 +123,7 @@ function AGS:AddPlayer(name, reason, meta)
   applyDefaultsForMeta(self, e)
   self.db.profile.players[normalized] = e
   self:Print(("Player %s added to blacklist."):format(normalized))
+  NotifyDBChanged(self, "players", "add", normalized)
   self:RefreshLFGHighlights()
 end
 
@@ -124,6 +131,7 @@ function AGS:RemovePlayer(name)
   local normalized = self:NormalizePlayerName(name); if not normalized then return end
   self.db.profile.players[normalized] = nil
   self:Print(("Player %s removed from blacklist."):format(normalized))
+  NotifyDBChanged(self, "players", "remove", normalized)
   self:RefreshLFGHighlights()
 end
 
@@ -140,6 +148,7 @@ function AGS:AddRealm(realmName, reason, meta)
   applyDefaultsForMeta(self, e)
   self.db.profile.realms[realm] = e
   self:Print(("Realm %s added to blacklist."):format(realm))
+  NotifyDBChanged(self, "realms", "add", realm)
   self:RefreshLFGHighlights()
 end
 
@@ -147,6 +156,7 @@ function AGS:RemoveRealm(realmName)
   local realm = self:NormalizeRealm(realmName); if realm == "" then return end
   self.db.profile.realms[realm] = nil
   self:Print(("Realm %s removed from blacklist."):format(realm))
+  NotifyDBChanged(self, "realms", "remove", realm)
   self:RefreshLFGHighlights()
 end
 
@@ -163,6 +173,7 @@ function AGS:AddGuild(guildName, realmName, reason, meta)
   initTimestampFields(g, prev)
   applyDefaultsForMeta(self, g)
   self:Print(("Guild %s added/updated in blacklist."):format(gkey))
+  NotifyDBChanged(self, "guilds", "add", gkey)
   self:RefreshLFGHighlights()
 end
 
@@ -170,6 +181,7 @@ function AGS:RemoveGuild(guildName, realmName)
   local gkey = self:GuildKey(guildName, realmName)
   self.db.profile.guilds[gkey] = nil
   self:Print(("Guild %s removed from blacklist."):format(gkey))
+  NotifyDBChanged(self, "guilds", "remove", gkey)
   self:RefreshLFGHighlights()
 end
 
@@ -232,9 +244,10 @@ function AGS:OnInitialize()
   self:RegisterEvent("GROUP_ROSTER_UPDATE", "ScanGroupMembers")
   self:RegisterEvent("PLAYER_ENTERING_WORLD", "ScanGroupMembers")
 
-  -- Tooltips + Context menu
+  -- Tooltips + Context menu + LFG name prefix hook
   self:InstallTooltipModule()
   self:InstallContextMenu()
+  self:InstallLFGNamePrefixer()
 
   self:Print("Aegis initialized. Use /aegis for commands.")
 end
@@ -261,7 +274,7 @@ function AGS:HandleSlash(input)
 end
 
 -- =============================================================================
--- LFG highlighting overlays
+-- LFG highlighting overlays + name prefixing
 -- =============================================================================
 local function getOverlay(frame)
   if not frame then return end
@@ -281,6 +294,58 @@ function AGS:SetOverlay(frame, enabled)
   else
     t:Hide()
   end
+end
+
+-- Helper: true if the search result’s leader/realm is blacklisted
+local function IsResultBlacklisted(self, resultID)
+  if not resultID then return false end
+  local info = C_LFGList.GetSearchResultInfo(resultID)
+  if not info or not info.leaderName then return false end
+  local norm = self:NormalizePlayerName(info.leaderName)
+  local entry = self:IsPlayerBlacklisted(norm)
+  if not entry then
+    local _, realm = self:SplitNameRealm(norm)
+    if realm and self.db and self.db.profile.realms[realm] then
+      entry = true
+    end
+  end
+  return not not entry
+end
+
+-- Install a resilient hook that prefixes the visible group name text
+function AGS:InstallLFGNamePrefixer()
+  if self.__LFGNameHooked then return end
+  self.__LFGNameHooked = true
+
+  local PREFIX_PATTERN = "^|cffff2020BLACKLISTED|r%s*%-?%s*"
+  local function stripPrefix(s) return (s or ""):gsub(PREFIX_PATTERN, "") end
+
+  hooksecurefunc("LFGListSearchEntry_Update", function(entry)
+    if not entry or not entry.Name or not entry.Name.GetText then return end
+
+    local resultID
+    if entry.GetData then
+      local d = entry:GetData()
+      resultID = d and d.resultID
+    end
+    resultID = resultID or entry.resultID
+    if not resultID then return end
+
+    local isBL = IsResultBlacklisted(AGS, resultID)
+
+    local current = entry.Name:GetText() or ""
+    local base = stripPrefix(current)
+
+    if isBL then
+      if current ~= ("|cffff2020BLACKLISTED|r - "..base) then
+        entry.Name:SetText("|cffff2020BLACKLISTED|r - "..base)
+      end
+    else
+      if base ~= current then
+        entry.Name:SetText(base)
+      end
+    end
+  end)
 end
 
 function AGS:RefreshLFGHighlights()
@@ -314,10 +379,11 @@ function AGS:RefreshLFGHighlights()
         end
       end
       self:SetOverlay(row, isBL)
+      -- prefix is for search results only
     end)
   end
 
-  -- Search results (leaders)
+  -- Search results (leaders + realm) - overlay only; name text handled by hook
   local results = LFGListFrame and LFGListFrame.SearchPanel and LFGListFrame.SearchPanel.ResultsFrame
   if results and results.ScrollBox and results.ScrollBox.ForEachFrame then
     results.ScrollBox:ForEachFrame(function(row)
@@ -326,19 +392,7 @@ function AGS:RefreshLFGHighlights()
         local d = row:GetElementData()
         if d then resultID = d.resultID end
       end
-      local isBL = false
-      if resultID then
-        local info = C_LFGList.GetSearchResultInfo(resultID)
-        if info and info.leaderName then
-          local norm = self:NormalizePlayerName(info.leaderName)
-          local entry = self:IsPlayerBlacklisted(norm)
-          if not entry then
-            local _, realm = self:SplitNameRealm(norm)
-            if realm then entry = self.db.profile.realms[realm] end
-          end
-          if entry then isBL = true end
-        end
-      end
+      local isBL = IsResultBlacklisted(self, resultID)
       self:SetOverlay(row, isBL)
     end)
   end

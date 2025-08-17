@@ -1,11 +1,12 @@
 --[[-----------------------------------------------------------------------------
 Widgets.lua
-Author: Aegis Team (formerly BlacklistWarden)
+Author: Ayr
 Notes:
  - Fixes "attempt to call method 'GetSelectedTab' (a nil value)" by tracking
    the last-selected tab via SetUserData/GetUserData instead of using a method
    that may not exist in older AceGUI versions.
- - Maintains full UI and behavior. No functional changes beyond the fix.
+ - NEW: Listens for Aegis_DB_UPDATED and refreshes the visible table automatically
+        when entries are added/removed via context menu, slash commands, etc.
 -----------------------------------------------------------------------------]]--
 
 local addonName = ...
@@ -94,7 +95,7 @@ local function buildTopControls(container, scope)
             local name = ebName:GetText()
             if name and name ~= "" then
                 ADDON:AddPlayer(name, ebReason:GetText(), { type = ddType:GetValue(), category = ddCat:GetValue() })
-                -- Fire both for compatibility with old/new event names
+                -- Force immediate refresh of the current tab
                 container:Fire("Aegis_Refresh")
             end
         end)
@@ -301,6 +302,10 @@ local function buildTabs(container)
     end
     tabs:SetCallback("Aegis_Refresh", doRefresh)
 
+    -- expose to the outer frame so message listeners can refresh
+    tabs.AegisDoRefresh = doRefresh
+    if ui then ui.tabs = tabs end
+
     tabs:SetUserData("last_selected", "players")
     tabs:SelectTab("players")
     container:AddChild(tabs)
@@ -315,4 +320,13 @@ function _G.Aegis_OpenUI()
     if ui.frame and ui.frame.SetResizeBounds then ui.frame:SetResizeBounds(700, 440)
     elseif ui.frame and ui.frame.SetMinResize then ui.frame:SetMinResize(700, 440) end
     buildTabs(ui)
+
+    -- Listen for DB changes from Core and refresh the active tab.
+    if ADDON and ADDON.RegisterMessage then
+        ADDON:RegisterMessage("Aegis_DB_UPDATED", function()
+            if ui and ui.tabs and ui.tabs.AegisDoRefresh then
+                ui.tabs:AegisDoRefresh()
+            end
+        end)
+    end
 end
