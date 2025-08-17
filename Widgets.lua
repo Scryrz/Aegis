@@ -96,6 +96,7 @@ local function buildTopControls(container, scope)
                 ADDON:AddPlayer(name, ebReason:GetText(), { type = ddType:GetValue(), category = ddCat:GetValue() })
                 -- Fire both for compatibility with old/new event names
                 container:Fire("Aegis_Refresh")
+                container:Fire("AegisRefresh")
             end
         end)
         wrap:AddChild(btn)
@@ -113,6 +114,7 @@ local function buildTopControls(container, scope)
                 local realm = ebRealm:GetText(); if realm == "" then realm = nil end
                 ADDON:AddGuild(g, realm, ebReason:GetText(), { type = ddType:GetValue(), category = ddCat:GetValue() })
                 container:Fire("Aegis_Refresh")
+                container:Fire("AegisRefresh")
             end
         end)
         wrap:AddChild(btn)
@@ -128,6 +130,7 @@ local function buildTopControls(container, scope)
             if r and r ~= "" then
                 ADDON:AddRealm(r, ebReason:GetText(), { type = ddType:GetValue(), category = ddCat:GetValue() })
                 container:Fire("Aegis_Refresh")
+                container:Fire("AegisRefresh")
             end
         end)
         wrap:AddChild(btn)

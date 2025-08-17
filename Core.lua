@@ -283,6 +283,28 @@ function AGS:SetOverlay(frame, enabled)
   end
 end
 
+function AGS:SetGroupNamePrefix(row, enabled)
+  if not row then return end
+  local label = row.Name or row.GroupName or (row.DataDisplay and row.DataDisplay.Name)
+  if not label or not label.GetText or not label.SetText then return end
+  if enabled then
+    if not row.__AegisOriginalName then
+      row.__AegisOriginalName = label:GetText()
+    end
+    if not row.__AegisPrefixed then
+      label:SetText("|cffff0000BLACKLIST|r " .. (row.__AegisOriginalName or ""))
+      row.__AegisPrefixed = true
+    end
+  else
+    if row.__AegisPrefixed and row.__AegisOriginalName then
+      label:SetText(row.__AegisOriginalName)
+    else
+      row.__AegisOriginalName = label:GetText()
+    end
+    row.__AegisPrefixed = nil
+  end
+end
+
 function AGS:RefreshLFGHighlights()
   if not self.db or not self.db.profile.settings.enableLFGHighlight then return end
 
@@ -340,6 +362,7 @@ function AGS:RefreshLFGHighlights()
         end
       end
       self:SetOverlay(row, isBL)
+      self:SetGroupNamePrefix(row, isBL)
     end)
   end
 end
