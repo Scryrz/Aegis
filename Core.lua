@@ -1,6 +1,5 @@
 --[[-----------------------------------------------------------------------------
 Aegis - Core.lua
-Single-source tooltip injection patterned after Archon Tooltips.
 -----------------------------------------------------------------------------]]--
 
 local addonName = ...
