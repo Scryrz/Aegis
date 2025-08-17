@@ -2,11 +2,7 @@
 Widgets.lua
 Author: Ayr
 Notes:
- - Fixes "attempt to call method 'GetSelectedTab' (a nil value)" by tracking
-   the last-selected tab via SetUserData/GetUserData instead of using a method
-   that may not exist in older AceGUI versions.
- - NEW: Listens for Aegis_DB_UPDATED and refreshes the visible table automatically
-        when entries are added/removed via context menu, slash commands, etc.
+ - UPDATE: Column headers now display in yellow; Realms table no longer shows a "Name" column.
 -----------------------------------------------------------------------------]]--
 
 local addonName = ...
@@ -42,13 +38,17 @@ local function splitNameRealm(full)
     return name or "", realm or ""
 end
 
+-- Use Blizzard-like gold/yellow for headers
+local HEADER_COLOR_PREFIX = "|cffffd200" -- gold/yellow
+local HEADER_COLOR_SUFFIX = "|r"
+
 local function header(container, titles, widths)
     local hdr = AceGUI:Create("SimpleGroup")
     hdr:SetFullWidth(true)
     hdr:SetLayout("Flow")
     for i, title in ipairs(titles) do
         local lab = AceGUI:Create("Label")
-        lab:SetText("|cffF2F2FF" .. title .. "|r")
+        lab:SetText(HEADER_COLOR_PREFIX .. title .. HEADER_COLOR_SUFFIX)
         lab:SetWidth(widths[i])
         hdr:AddChild(lab)
     end
@@ -138,15 +138,34 @@ local function buildTopControls(container, scope)
 end
 
 -- -------------------------------------------------------
+-- Column Definitions (scope-specific)
+-- -------------------------------------------------------
+local COLS_PLAYERS   = { "Name", "Realm", "Type", "Category", "Date/Time", "Reason" }
+local WIDTHS_PLAYERS = { 160,     140,     110,    110,         130,        300 }
+
+local COLS_GUILDS    = { "Name", "Realm", "Type", "Category", "Date/Time", "Reason" }
+local WIDTHS_GUILDS  = { 160,     140,     110,    110,         130,        300 }
+
+-- Realms table intentionally has NO "Name" column
+local COLS_REALMS    = { "Realm", "Type", "Category", "Date/Time", "Reason" }
+local WIDTHS_REALMS  = { 160,     110,    110,        130,        300 }
+
+-- -------------------------------------------------------
 -- Tables
 -- -------------------------------------------------------
-local COLS   = { "Name", "Realm", "Type", "Category", "Date/Time", "Reason" }
-local WIDTHS = { 160,    140,     110,    110,         130,        300 }
-
 local function buildTable(container, scope)
     container:ReleaseChildren()
     buildTopControls(container, scope)
-    header(container, COLS, WIDTHS)
+
+    local cols, widths
+    if scope == "players" then
+        cols, widths = COLS_PLAYERS, WIDTHS_PLAYERS
+    elseif scope == "guilds" then
+        cols, widths = COLS_GUILDS, WIDTHS_GUILDS
+    else -- realms
+        cols, widths = COLS_REALMS, WIDTHS_REALMS
+    end
+    header(container, cols, widths)
 
     local scroll = AceGUI:Create("ScrollFrame")
     scroll:SetLayout("Flow")
@@ -164,9 +183,9 @@ local function buildTable(container, scope)
             local v = ADDON.db.profile.players[key]
             local n, r = splitNameRealm(key)
             local dateStr = (v.addedAtStr and v.addedAtStr ~= "") and v.addedAtStr or fmtDateTime(v.addedAtTS or v.addedAt)
-            local cols = { n ~= "" and n or "-", r ~= "" and r or "-", v.type or "N/A", v.category or "N/A", dateStr or "", v.reason or "" }
+            local rowVals = { n ~= "" and n or "-", r ~= "" and r or "-", v.type or "N/A", v.category or "N/A", dateStr or "", v.reason or "" }
             local row = AceGUI:Create("SimpleGroup"); row:SetLayout("Flow"); row:SetFullWidth(true)
-            for i=1,#cols do local lab=AceGUI:Create("Label"); lab:SetText(cols[i]); lab:SetWidth(WIDTHS[i]); row:AddChild(lab) end
+            for i=1,#rowVals do local lab=AceGUI:Create("Label"); lab:SetText(rowVals[i]); lab:SetWidth(widths[i]); row:AddChild(lab) end
             local btn = AceGUI:Create("Button"); btn:SetText("X"); btn:SetWidth(45)
             btn:SetCallback("OnClick", function() ADDON:RemovePlayer(key); container:Fire("Aegis_Refresh"); end)
             row:AddChild(btn); scroll:AddChild(row)
@@ -182,9 +201,9 @@ local function buildTable(container, scope)
             local v = ADDON.db.profile.guilds[key]
             local gName, r = key:match("^(.+)%-(.+)$")
             local dateStr = (v.addedAtStr and v.addedAtStr ~= "") and v.addedAtStr or fmtDateTime(v.addedAtTS or v.addedAt)
-            local cols = { gName or key, r or "-", v.type or "N/A", v.category or "N/A", dateStr or "", v.reason or "" }
+            local rowVals = { gName or key, r or "-", v.type or "N/A", v.category or "N/A", dateStr or "", v.reason or "" }
             local row = AceGUI:Create("SimpleGroup"); row:SetLayout("Flow"); row:SetFullWidth(true)
-            for i=1,#cols do local lab=AceGUI:Create("Label"); lab:SetText(cols[i]); lab:SetWidth(WIDTHS[i]); row:AddChild(lab) end
+            for i=1,#rowVals do local lab=AceGUI:Create("Label"); lab:SetText(rowVals[i]); lab:SetWidth(widths[i]); row:AddChild(lab) end
             local btn = AceGUI:Create("Button"); btn:SetText("X"); btn:SetWidth(45)
             btn:SetCallback("OnClick", function() ADDON:RemoveGuild(gName or key, r); container:Fire("Aegis_Refresh"); end)
             row:AddChild(btn); scroll:AddChild(row)
@@ -199,9 +218,10 @@ local function buildTable(container, scope)
         for _, realm in ipairs(keys) do
             local v = ADDON.db.profile.realms[realm]
             local dateStr = (v.addedAtStr and v.addedAtStr ~= "") and v.addedAtStr or fmtDateTime(v.addedAtTS or v.addedAt)
-            local cols = { "-", realm, v.type or "N/A", v.category or "N/A", dateStr or "", v.reason or "" }
+            -- No "Name" cell; columns match COLS_REALMS
+            local rowVals = { realm, v.type or "N/A", v.category or "N/A", dateStr or "", v.reason or "" }
             local row = AceGUI:Create("SimpleGroup"); row:SetLayout("Flow"); row:SetFullWidth(true)
-            for i=1,#cols do local lab=AceGUI:Create("Label"); lab:SetText(cols[i]); lab:SetWidth(WIDTHS[i]); row:AddChild(lab) end
+            for i=1,#rowVals do local lab=AceGUI:Create("Label"); lab:SetText(rowVals[i]); lab:SetWidth(widths[i]); row:AddChild(lab) end
             local btn = AceGUI:Create("Button"); btn:SetText("X"); btn:SetWidth(45)
             btn:SetCallback("OnClick", function() ADDON:RemoveRealm(realm); container:Fire("Aegis_Refresh"); end)
             row:AddChild(btn); scroll:AddChild(row)
