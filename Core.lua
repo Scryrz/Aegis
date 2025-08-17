@@ -1,6 +1,6 @@
 --[[-----------------------------------------------------------------------------
-Widgets.lua
-Author: Ayr
+Aegis - Core.lua
+Single-source tooltip injection patterned after Archon Tooltips.
 -----------------------------------------------------------------------------]]--
 
 local addonName = ...
@@ -245,9 +245,10 @@ function AGS:OnInitialize()
   self:RegisterEvent("GROUP_ROSTER_UPDATE", "ScanGroupMembers")
   self:RegisterEvent("PLAYER_ENTERING_WORLD", "ScanGroupMembers")
 
-  -- Tooltips + Context menu
+  -- Tooltips + Context menu + LFG name prefix hook
   self:InstallTooltipModule()
   self:InstallContextMenu()
+  self:InstallLFGNamePrefixer()
 
   self:Print("Aegis initialized. Use /aegis for commands.")
 end
@@ -261,12 +262,12 @@ function AGS:HandleSlash(input)
   input = input and (input:gsub('^%s+',''):gsub('%s+$','')) or ""
   if input == "" or input == "help" then
     self:Print("Commands:")
-    self:Print(" /aegis ui")
-    self:Print(' /aegis add player Name-Realm [reason]')
-    self:Print(' /aegis add guild "Guild Name" [Realm] [reason]')
-    self:Print(' /aegis add realm RealmName [reason]')
-    self:Print(' /aegis remove player|guild|realm <key>')
-    self:Print(' /aegis list [players|guilds|realms]')
+    self:Print("/aegis ui")
+    self:Print('/aegis add player Name-Realm [reason]')
+    self:Print('/aegis add guild "Guild Name" [Realm] [reason]')
+    self:Print('/aegis add realm RealmName [reason]')
+    self:Print('/aegis remove player|guild|realm <key>')
+    self:Print('/aegis list [players|guilds|realms]')
     return
   end
   if input == "ui" then self:OpenUI(); return end
@@ -274,7 +275,7 @@ function AGS:HandleSlash(input)
 end
 
 -- =============================================================================
--- LFG highlighting + name prefix tags
+-- LFG highlighting overlays + name prefixing
 -- =============================================================================
 local function getOverlay(frame)
   if not frame then return end
@@ -296,63 +297,56 @@ function AGS:SetOverlay(frame, enabled)
   end
 end
 
--- Try to locate the FontString that shows the group name for robust anchoring.
-local function AcquireSearchRowNameFS(row)
-  if row.Aegis_NameFS and row.Aegis_NameFS.GetText then return row.Aegis_NameFS end
-
-  local candidates = {}
-
-  local function push(fs)
-    if fs and fs.GetObjectType and fs:GetObjectType() == "FontString" then
-      table.insert(candidates, fs)
+-- Helper: true if the search result’s leader/realm is blacklisted
+local function IsResultBlacklisted(self, resultID)
+  if not resultID then return false end
+  local info = C_LFGList.GetSearchResultInfo(resultID)
+  if not info or not info.leaderName then return false end
+  local norm = self:NormalizePlayerName(info.leaderName)
+  local entry = self:IsPlayerBlacklisted(norm)
+  if not entry then
+    local _, realm = self:SplitNameRealm(norm)
+    if realm and self.db and self.db.profile.realms[realm] then
+      entry = true
     end
   end
-
-  -- Common fields across templates/patches
-  push(row.Name)
-  push(row.ActivityName)
-  if row.DataDisplay then
-    push(row.DataDisplay.Name)
-    push(row.DataDisplay.ActivityName)
-  end
-
-  -- Fallback: first visible FontString region
-  if #candidates == 0 and row.GetRegions then
-    local i = 1
-    while true do
-      local r = select(i, row:GetRegions())
-      if not r then break end
-      if r.GetObjectType and r:GetObjectType() == "FontString" and r:IsShown() then
-        table.insert(candidates, r)
-      end
-      i = i + 1
-    end
-  end
-
-  row.Aegis_NameFS = candidates[1]
-  return row.Aegis_NameFS
+  return not not entry
 end
 
--- Show/Hide a red "BLACKLISTED" prefix near the group name.
-function AGS:UpdateSearchRowPrefix(row, isBlacklisted)
-  if not row then return end
+-- Install a resilient hook that prefixes the visible group name text
+function AGS:InstallLFGNamePrefixer()
+  if self.__LFGNameHooked then return end
+  self.__LFGNameHooked = true
 
-  local tag = row.Aegis_BLTag
-  if not tag then
-    tag = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    tag:SetText("|cffff2020BLACKLISTED|r")
-    tag:SetJustifyH("LEFT")
-    -- prefer anchoring before the name fontstring; otherwise left edge of row
-    local nameFS = AcquireSearchRowNameFS(row)
-    if nameFS then
-      tag:SetPoint("RIGHT", nameFS, "LEFT", -4, 0)
-    else
-      tag:SetPoint("LEFT", row, "LEFT", 6, 0)
+  local PREFIX_PATTERN = "^|cffff2020BLACKLISTED|r%s*%-?%s*"
+  local function stripPrefix(s) return (s or ""):gsub(PREFIX_PATTERN, "") end
+
+  hooksecurefunc("LFGListSearchEntry_Update", function(entry)
+    if not entry or not entry.Name or not entry.Name.GetText then return end
+
+    local resultID
+    if entry.GetData then
+      local d = entry:GetData()
+      resultID = d and d.resultID
     end
-    row.Aegis_BLTag = tag
-  end
+    resultID = resultID or entry.resultID
+    if not resultID then return end
 
-  if isBlacklisted then tag:Show() else tag:Hide() end
+    local isBL = IsResultBlacklisted(AGS, resultID)
+
+    local current = entry.Name:GetText() or ""
+    local base = stripPrefix(current)
+
+    if isBL then
+      if current ~= ("|cffff2020BLACKLISTED|r - "..base) then
+        entry.Name:SetText("|cffff2020BLACKLISTED|r - "..base)
+      end
+    else
+      if base ~= current then
+        entry.Name:SetText(base)
+      end
+    end
+  end)
 end
 
 function AGS:RefreshLFGHighlights()
@@ -386,11 +380,11 @@ function AGS:RefreshLFGHighlights()
         end
       end
       self:SetOverlay(row, isBL)
-      -- no prefix for applicants; only for search results per requirements
+      -- prefix is for search results only
     end)
   end
 
-  -- Search results (leaders + realm)
+  -- Search results (leaders + realm) - overlay only; name text handled by hook
   local results = LFGListFrame and LFGListFrame.SearchPanel and LFGListFrame.SearchPanel.ResultsFrame
   if results and results.ScrollBox and results.ScrollBox.ForEachFrame then
     results.ScrollBox:ForEachFrame(function(row)
@@ -399,21 +393,8 @@ function AGS:RefreshLFGHighlights()
         local d = row:GetElementData()
         if d then resultID = d.resultID end
       end
-      local isBL = false
-      if resultID then
-        local info = C_LFGList.GetSearchResultInfo(resultID)
-        if info and info.leaderName then
-          local norm = self:NormalizePlayerName(info.leaderName)
-          local entry = self:IsPlayerBlacklisted(norm)
-          if not entry then
-            local _, realm = self:SplitNameRealm(norm)
-            if realm then entry = self.db.profile.realms[realm] end
-          end
-          if entry then isBL = true end
-        end
-      end
+      local isBL = IsResultBlacklisted(self, resultID)
       self:SetOverlay(row, isBL)
-      self:UpdateSearchRowPrefix(row, isBL) -- NEW: visible "BLACKLISTED" prefix
     end)
   end
 end
