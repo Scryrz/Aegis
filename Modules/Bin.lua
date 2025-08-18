@@ -22,6 +22,7 @@ Bin._ui      = nil         -- UI handle (set by UI_Bin)
 -- Helpers
 -- -----------------------------
 local function NowTS() return time() end
+
 local function NormalizeFull(name, realm)
   if not name or name == "" then return nil end
   if realm and realm ~= "" then return name .. "-" .. realm end
@@ -29,25 +30,50 @@ local function NormalizeFull(name, realm)
   return name .. "-" .. (pr or "")
 end
 
+local UNKNOWN_LBL = _G.UNKNOWNOBJECT or "Unknown"
+
+local function IsNameUnresolved(name)
+  -- Guard against localized "Unknown"
+  if not name or name == "" then return true end
+  if name == UNKNOWN_LBL then return true end
+  return false
+end
+
+-- Iterate the current roster and call addFunc(name, realm, guild, full) for valid players.
+-- Returns true if any unresolved players were encountered (so caller can retry shortly after).
 local function IterateRoster(addFunc)
   local n = GetNumGroupMembers() or 0
-  if n <= 0 then return end
+  if n <= 0 then return false end
+
+  local sawUnresolved = false
   local raid = IsInRaid()
   local unitPrefix = raid and "raid" or "party"
   local total = raid and n or (n - 1)
+
   for i = 1, total do
     local unit = unitPrefix .. i
-    if UnitExists(unit) then
-      local name, realm = UnitFullName(unit)
-      if name then
-        local full = NormalizeFull(name, realm)
-        if full and not UnitIsUnit(unit, "player") then
-          local guild = GetGuildInfo(unit)
-          addFunc(name, realm or "", guild or "", full)
+    if UnitExists(unit) and UnitIsPlayer(unit) then
+      -- Skip the player itself
+      if not UnitIsUnit(unit, "player") then
+        if not UnitIsConnected(unit) then
+          sawUnresolved = true
+        else
+          local name, realm = UnitFullName(unit)
+          if IsNameUnresolved(name) then
+            sawUnresolved = true
+          else
+            local full = NormalizeFull(name, realm)
+            if full then
+              local guild = GetGuildInfo(unit)
+              addFunc(name, realm or "", guild or "", full)
+            end
+          end
         end
       end
     end
   end
+
+  return sawUnresolved
 end
 
 -- -----------------------------
@@ -67,19 +93,34 @@ end
 
 function Bin:IngestRosterSnapshot()
   if not self._entries then return end
-  IterateRoster(function(name, realm, guild, full)
+
+  local sawUnresolved = IterateRoster(function(name, realm, guild, full)
     if not self._removed[full] and not self._index[full] then
-      local e = {
-        full   = full,
-        name   = name,
-        realm  = realm ~= "" and realm or (GetNormalizedRealmName() or GetRealmName() or ""),
-        guild  = (guild and guild ~= "") and guild or "-",
-        tsAdded= NowTS(),
-      }
-      table.insert(self._entries, e)
-      self._index[full] = e
+      -- Reject any stragglers that still look unresolved (belt-and-suspenders)
+      if not IsNameUnresolved(name) then
+        local e = {
+          full   = full,
+          name   = name,
+          realm  = realm ~= "" and realm or (GetNormalizedRealmName() or GetRealmName() or ""),
+          guild  = (guild and guild ~= "") and guild or "-",
+          tsAdded= NowTS(),
+        }
+        table.insert(self._entries, e)
+        self._index[full] = e
+      end
     end
   end)
+
+  -- If we saw unresolved members, retry once shortly after; they usually resolve within a frame or two.
+  if sawUnresolved then
+    C_Timer.After(0.25, function()
+      -- Only retry if session still active
+      if self._entries then
+        self:IngestRosterSnapshot()
+      end
+    end)
+  end
+
   if self._ui and self._ui.Refresh then self._ui:Refresh() end
 end
 

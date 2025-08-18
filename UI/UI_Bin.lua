@@ -75,9 +75,10 @@ local function buildRows(container)
     local cell = AceGUI:Create("SimpleGroup"); cell:SetLayout("Flow"); cell:SetWidth(WIDTHS[#WIDTHS])
     local btnAdd = AceGUI:Create("Button"); btnAdd:SetText("+"); btnAdd:SetWidth(50)
     btnAdd:SetCallback("OnClick", function()
-      local full = e.full
-      local def = AGS.db.profile.settings.defaults or { type = "N/A", category = "N/A" }
-      AGS:Aegis_AddPlayer(full, "Added from Bin", { type = def.type, category = def.category })
+    local full = e.full
+    local def = AGS.db.profile.settings.defaults or { type = "N/A", category = "N/A" }
+    AGS.Aegis_AddPlayer(full, "Added from Bin", { type = def.type, category = def.category })
+    Bin:RemoveFromSession(full)  -- 🔹 remove from bin after adding
     end)
     cell:AddChild(btnAdd)
 
