@@ -193,30 +193,74 @@ function AGS:AddMemberToBlacklistedGuild(guildName, realmName, playerNameNormali
 end
 
 -- =============================================================================
--- Group scan
+-- Bin session reference/state (set in OnInitialize)
+-- =============================================================================
+local Bin -- resolved to AGS.Bin or _G.AegisBin
+local BIN_STATE = { inGroup = nil } -- nil=unknown, true=grouped, false=solo
+
+-- =============================================================================
+-- Group scan (+ Bin session fanout)
 -- =============================================================================
 function AGS:ScanGroupMembers()
+  -- Existing behavior: track blacklisted guild members we’re grouped with
   local num = GetNumGroupMembers()
-  if num == 0 then return end
-  local raid = IsInRaid()
-  local unitPrefix = raid and "raid" or "party"
-  local total = raid and num or (num - 1)
-  for i = 1, total do
-    local unit = unitPrefix .. i
-    if UnitExists(unit) then
-      local name, realm = UnitFullName(unit)
-      if name then
-        local full = realm and realm ~= "" and (name.."-"..realm) or self:NormalizePlayerName(name)
-        local guildName = GetGuildInfo(unit)
-        local _, r = self:SplitNameRealm(full)
-        if guildName and r then
-          local gkey = self:GuildKey(guildName, r)
-          if self.db.profile.guilds[gkey] then
-            self:AddMemberToBlacklistedGuild(guildName, r, full)
+  if num and num > 0 then
+    local raid = IsInRaid()
+    local unitPrefix = raid and "raid" or "party"
+    local total = raid and num or (num - 1)
+    for i = 1, total do
+      local unit = unitPrefix .. i
+      if UnitExists(unit) then
+        local name, realm = UnitFullName(unit)
+        if name then
+          local full = realm and realm ~= "" and (name.."-"..realm) or self:NormalizePlayerName(name)
+          local guildName = GetGuildInfo(unit)
+          local _, r = self:SplitNameRealm(full)
+          if guildName and r then
+            local gkey = self:GuildKey(guildName, r)
+            if self.db.profile.guilds[gkey] then
+              self:AddMemberToBlacklistedGuild(guildName, r, full)
+            end
           end
         end
       end
     end
+  end
+
+  -- =========================
+  -- Bin session lifecycle
+  -- =========================
+  local grouped = (IsInGroup() or IsInRaid()) and (GetNumGroupMembers() or 0) > 0
+
+  if BIN_STATE.inGroup == nil then
+    -- first tick after login/reload
+    BIN_STATE.inGroup = grouped
+    if grouped and Bin and Bin.StartSession then
+      Bin:StartSession()
+      if Bin.IngestRosterSnapshot then Bin:IngestRosterSnapshot() end
+    end
+    return
+  end
+
+  if BIN_STATE.inGroup and not grouped then
+    -- grouped -> solo: end session and auto-open
+    BIN_STATE.inGroup = false
+    if Bin and Bin.EndSession then Bin:EndSession() end
+    if Bin and Bin.OpenFrame then Bin:OpenFrame() end
+    return
+  end
+
+  if (not BIN_STATE.inGroup) and grouped then
+    -- solo -> grouped: start and seed
+    BIN_STATE.inGroup = true
+    if Bin and Bin.StartSession then Bin:StartSession() end
+    if Bin and Bin.IngestRosterSnapshot then Bin:IngestRosterSnapshot() end
+    return
+  end
+
+  if grouped then
+    -- still grouped: append newcomers (Bin handles dedupe/removed)
+    if Bin and Bin.IngestRosterSnapshot then Bin:IngestRosterSnapshot() end
   end
 end
 
@@ -249,6 +293,9 @@ function AGS:OnInitialize()
   self:InstallContextMenu()
   self:InstallLFGNamePrefixer()
 
+  -- Resolve Bin module if present
+  Bin = (self.Bin or _G.AegisBin)
+
   self:Print("Aegis initialized. Use /aegis for commands.")
 end
 
@@ -262,6 +309,7 @@ function AGS:HandleSlash(input)
   if input == "" or input == "help" then
     self:Print("Commands:")
     self:Print("/aegis ui")
+    self:Print("/aegis bin")
     self:Print('/aegis add player Name-Realm [reason]')
     self:Print('/aegis add guild "Guild Name" [Realm] [reason]')
     self:Print('/aegis add realm RealmName [reason]')
@@ -270,6 +318,11 @@ function AGS:HandleSlash(input)
     return
   end
   if input == "ui" then self:OpenUI(); return end
+  if input == "bin" then
+    local BinRef = (self.Bin or _G.AegisBin)
+    if BinRef and BinRef.OpenFrame then BinRef:OpenFrame() else self:Print("Bin UI not available.") end
+    return
+  end
   self:Print("Unknown command. Try /aegis help")
 end
 
