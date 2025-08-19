@@ -46,10 +46,11 @@ local ROW_BG               = {0, 0, 0, 0.28}
 local ROW_BG_ENTER         = {0.18, 0.18, 0.18, 0.40}
 
 local HEADER_COLS = {
-  {text = "Name",    width = NAME_W,    name = "name",    canSort = true},
-  {text = "Realm",   width = REALM_W,   name = "realm",   canSort = true},
-  {text = "Added",   width = ADDED_W,   name = "tsAdded", canSort = true},
-  {text = "Actions", width = ACTIONS_W, name = "actions", canSort = false},
+  {text = "Name",    width = NAME_W,    name = "name",    canSort = true, dataType = "string", order = "DESC", offset = 0},
+  {text = "Realm",   width = REALM_W,   name = "realm",   canSort = true, dataType = "string", order = "DESC", offset = 0},
+  -- make "Added" the default selected column with DESC order (like Details does for a default)
+  {text = "Added",   width = ADDED_W,   name = "tsAdded", canSort = true, dataType = "string", selected = true, order = "DESC", offset = 0},
+  {text = "Actions", width = ACTIONS_W, name = "actions", canSort = false, offset = 0},
 }
 
 local HEADER_OPTIONS = {
@@ -57,6 +58,11 @@ local HEADER_OPTIONS = {
   header_backdrop_color = {.30, .30, .30, .80},
   header_backdrop_color_selected = {.90, .90, 0, 1},
   use_line_separators = false,
+  line_separator_color = {.1, .1, .1, .5},
+  line_separator_width = 1,
+  line_separator_height = FRAME_H - 30,
+  line_separator_gap_align = true,
+  header_click_callback = headerOnClickCallback,
 }
 
 -- =============================================================================
@@ -67,22 +73,50 @@ local function fmtDateTime(ts) return ts and date("%Y-%m-%d %H:%M", ts) or "" en
 -- default sort points to "Added" (column 3)
 local currentSort = { col = 3, order = -1 } -- desc
 
+-- sort using the same pattern Details uses:
+-- the header click only triggers a refresh; the refresh reads Header:GetSelectedColumn()
 local function sortData(entries)
-  local col   = currentSort.col or 3
-  local order = currentSort.order or -1
-  local key   = HEADER_COLS[col] and HEADER_COLS[col].name or "tsAdded"
+  -- default if header isn't instantiated yet
+  local colIndex, orderStr = 3, "DESC"
+  if _G[FRAME_NAME] and _G[FRAME_NAME].Header and _G[FRAME_NAME].Header.GetSelectedColumn then
+    local c, o = _G[FRAME_NAME].Header:GetSelectedColumn()
+    if type(c) == "number" then colIndex = c end
+    if type(o) == "string"  then orderStr = o end
+  end
+
+  -- map header column to our entry keys
+  local key
+  if colIndex == 1 then
+    key = "name"
+  elseif colIndex == 2 then
+    key = "realm"
+  else
+    key = "tsAdded"
+  end
+
+  local desc = (orderStr == "DESC")
 
   local function sval(v) return (v and tostring(v):lower()) or "" end
 
   table.sort(entries, function(a, b)
-    local av, bv = a[key], b[key]
+    if not a and not b then return false end
+    if not a then return false end
+    if not b then return true end
+
     if key == "tsAdded" then
-      av, bv = tonumber(av or 0) or 0, tonumber(bv or 0) or 0
-      return order == 1 and (av < bv) or (av > bv)
+      local av = tonumber(a.tsAdded or 0) or 0
+      local bv = tonumber(b.tsAdded or 0) or 0
+      return desc and (av > bv) or (av < bv)
     else
-      av, bv = sval(av), sval(bv)
-      if av == bv then return sval(a.name) < sval(b.name) end
-      return order == 1 and (av < bv) or (av > bv)
+      local av = sval(a[key])
+      local bv = sval(b[key])
+      if av == bv then
+        -- stable-ish by name
+        local an = sval(a.name)
+        local bn = sval(b.name)
+        return desc and (an > bn) or (an < bn)
+      end
+      return desc and (av > bv) or (av < bv)
     end
   end)
 end
@@ -102,7 +136,71 @@ local UI = { frame = nil, header = nil, scroll = nil }
 
 function UI:Refresh()
   if not self.scroll then return end
-  local entries = getData()
+
+  -- copy current bin entries (unsorted)
+  local src = (Bin and Bin.GetEntries and Bin:GetEntries()) or {}
+  local entries = {}
+  for i = 1, #src do
+    entries[i] = src[i]
+  end
+
+  -- Details-style: read column + textual order ("ASC"|"DESC") from the header on refresh
+  local colIndex, order = 3, "DESC" -- default: Added (DESC) like our initial selection
+  if self.header and self.header.GetSelectedColumn then
+    local c, o = self.header:GetSelectedColumn()
+    if type(c) == "number" then colIndex = c end
+    if type(o) == "string"  then order = o end
+  end
+
+  -- map selected column to our table keys (Name, Realm, Added)
+  local key
+  if colIndex == 1 then
+    key = "name"
+  elseif colIndex == 2 then
+    key = "realm"
+  else
+    key = "tsAdded"
+  end
+
+  -- comparator: use > for DESC and < for ASC (identical behavior to the sample)
+  if key == "tsAdded" then
+    if order == "DESC" then
+      table.sort(entries, function(a, b)
+        local av = tonumber(a and a.tsAdded or 0) or 0
+        local bv = tonumber(b and b.tsAdded or 0) or 0
+        return av > bv
+      end)
+    else
+      table.sort(entries, function(a, b)
+        local av = tonumber(a and a.tsAdded or 0) or 0
+        local bv = tonumber(b and b.tsAdded or 0) or 0
+        return av < bv
+      end)
+    end
+  else
+    local function sval(v) return (v and tostring(v)) or "" end
+    if order == "DESC" then
+      table.sort(entries, function(a, b)
+        local av = sval(a and a[key])
+        local bv = sval(b and b[key])
+        if av == bv then
+          -- small tiebreaker by name, mirrors Details' stable feel
+          return sval(a and a.name) > sval(b and b.name)
+        end
+        return av > bv
+      end)
+    else
+      table.sort(entries, function(a, b)
+        local av = sval(a and a[key])
+        local bv = sval(b and b[key])
+        if av == bv then
+          return sval(a and a.name) < sval(b and b.name)
+        end
+        return av < bv
+      end)
+    end
+  end
+
   self.scroll:SetData(entries)
   self.scroll:Refresh()
 end
@@ -185,7 +283,14 @@ local function refreshLines(scroll, data, offset, totalLines)
       line.AddedText.text = fmtDateTime(entry.tsAdded)
       line.ActionsDropdown.__full = entry.full
       line.ActionsDropdown:Refresh()
+
+      -- NEW: reset dropdown selection to null on each refresh
+      line.ActionsDropdown:SetValue(nil)
+      if line.ActionsDropdown.NoOptionSelected then
+        line.ActionsDropdown:NoOptionSelected()
+      end
     end
+
     -- when no entry: don't fetch the line; DF keeps it hidden
   end
 end
@@ -202,21 +307,20 @@ function _G.AegisBin_Open()
   local f = DF:CreateSimplePanel(UIParent, FRAME_W, FRAME_H, "Aegis - Bin", FRAME_NAME)
   f:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
 
-  local function onHeaderClick(headerFrame, columnHeader, columnIndex, columnOrder)
-    currentSort.col   = columnIndex or currentSort.col
-    currentSort.order = columnOrder or (-(currentSort.order or -1))
+  -- Details-style: header click just refreshes; sorting is read from GetSelectedColumn()
+  local function headerOnClickCallback(headerFrame, columnHeader)
     UI:Refresh()
   end
 
   local headerOpts = {}
   for k, v in pairs(HEADER_OPTIONS) do headerOpts[k] = v end
-  headerOpts.header_click_callback = onHeaderClick
+  headerOpts.header_click_callback = headerOnClickCallback
 
   -- Header background stretches to the frame edges,
   -- but column widths add up to SCROLL_W so the last column sits flush with the scrollbar.
   local header = DF:CreateHeader(f, HEADER_COLS, headerOpts, FRAME_NAME .. "Header")
   header:SetPoint("TOPLEFT",  f, "TOPLEFT",  2,  HEADER_Y)
-  header:SetPoint("TOPRIGHT", f, "TOPRIGHT", -2, HEADER_Y)
+  header:SetPoint("TOPRIGHT", f, "TOPRIGHT", -2,  HEADER_Y)
   f.Header = header
 
   -- ScrollBox: use Details sample sizing and offsets so the bar hugs the inner edge
@@ -226,11 +330,27 @@ function _G.AegisBin_Open()
     scroll.ScrollBar:AdjustPointsOffset(-23, -1)
   end
 
+  -- enable mouse wheel
+  scroll:EnableMouseWheel(true)
+  scroll:SetScript("OnMouseWheel", function(self, delta)
+    local step = self.LineHeight * 3
+    local cur = (self:GetOffsetFaux() or 0) * self.LineHeight
+    if delta < 0 then
+      self:OnVerticalScrollFaux(cur + step, self.LineHeight, self.Refresh)
+    else
+      self:OnVerticalScrollFaux(math.max(0, cur - step), self.LineHeight, self.Refresh)
+    end
+  end)
+
   -- anchor to header exactly as in the sample
   scroll:SetPoint("topleft",  f.Header, "bottomleft",  -1, -1)
   scroll:SetPoint("topright", f.Header, "bottomright",  0, -1)
 
   f.ScrollBox = scroll
+
+  -- compute visible lines to match the scrollbox height (accounts for 1px row gap)
+  local visible = math.max(1, math.floor((scroll:GetHeight()) / (LINE_HEIGHT + 1)))
+  scroll.LineAmount = visible
 
   -- create visible lines before first refresh
   for i = 1, scroll.LineAmount do
