@@ -1,139 +1,245 @@
 --[[-----------------------------------------------------------------------------
 Aegis - UI_Bin.lua
-AceGUI window for the Bin (temporary roster).
+Details Framework recreation modeled after DetailsKeystoneInfoFrame.
+
+Fixes:
+ - removes extra margin around the scroll area
+ - hides all lines when there's no data (only mark lines InUse when entry exists)
+Update:
+ - removed Guild column from header, rows, and refresh logic
+ - headers span the frame interior; Actions column flush with scrollbar
 -----------------------------------------------------------------------------]]--
 
 local addonName = ...
 local AGS = LibStub("AceAddon-3.0"):GetAddon("Aegis", true)
-local AceGUI = LibStub("AceGUI-3.0")
+local Bin = AGS and AGS.Bin or _G.AegisBin
 
-if not AceGUI then
+-- Prefer embedded DetailsFramework; fallback to LibDFramework-1.0 if present
+local DF = _G.DetailsFramework or (LibStub and LibStub("LibDFramework-1.0", true))
+if not DF then
   function _G.AegisBin_Open()
-    if AGS and AGS.Print then AGS:Print("AceGUI-3.0 is required for the Bin UI.") end
+    if AGS and AGS.Print then AGS:Print("DetailsFramework not available; Bin UI cannot open.") end
   end
   return
 end
 
-local Bin = AGS and AGS.Bin or _G.AegisBin
-local ui = nil
+-- =============================================================================
+-- Layout / visuals (match DetailsKeystoneInfoFrame proportions)
+-- =============================================================================
+local FRAME_NAME           = "AegisDFBinFrame"
+local FRAME_W, FRAME_H     = 650, 499 -- Details-size window
+local HEADER_Y             = -25
+local LINE_HEIGHT          = 21
+local LINE_AMOUNT          = 24
 
--- Column spec
-local COLS   = { "Name", "Realm", "Guild", "Added", "Actions" }
-local WIDTHS = { 160,     140,     220,     140,     140 }
+-- Scrollbox sizing copied from the Details sample so the bar sits at the inner edge
+local SCROLL_W             = FRAME_W - 10
+local SCROLL_H             = FRAME_H - 50
 
-local HEADER_COLOR_PREFIX = "|cffffd200"
-local HEADER_COLOR_SUFFIX = "|r"
+-- Column widths must add up to SCROLL_W to avoid any gap before the scrollbar
+local NAME_W               = 200
+local REALM_W              = 160
+local ADDED_W              = 150
+local ACTIONS_W            = (SCROLL_W - (NAME_W + REALM_W + ADDED_W)) + 1 -- fills to scrollbar
 
+local ROW_BG               = {0, 0, 0, 0.28}
+local ROW_BG_ENTER         = {0.18, 0.18, 0.18, 0.40}
+
+local HEADER_COLS = {
+  {text = "Name",    width = NAME_W,    name = "name",    canSort = true},
+  {text = "Realm",   width = REALM_W,   name = "realm",   canSort = true},
+  {text = "Added",   width = ADDED_W,   name = "tsAdded", canSort = true},
+  {text = "Actions", width = ACTIONS_W, name = "actions", canSort = false},
+}
+
+local HEADER_OPTIONS = {
+  padding = 1,
+  header_backdrop_color = {.30, .30, .30, .80},
+  header_backdrop_color_selected = {.90, .90, 0, 1},
+  use_line_separators = false,
+}
+
+-- =============================================================================
+-- Helpers
+-- =============================================================================
 local function fmtDateTime(ts) return ts and date("%Y-%m-%d %H:%M", ts) or "" end
 
-local function buildHeader(container)
-  local hdr = AceGUI:Create("SimpleGroup")
-  hdr:SetFullWidth(true)
-  hdr:SetLayout("Flow")
-  for i, title in ipairs(COLS) do
-    local lab = AceGUI:Create("Label")
-    lab:SetText(HEADER_COLOR_PREFIX .. title .. HEADER_COLOR_SUFFIX)
-    lab:SetWidth(WIDTHS[i])
-    hdr:AddChild(lab)
-  end
-  container:AddChild(hdr)
+-- default sort points to "Added" (column 3)
+local currentSort = { col = 3, order = -1 } -- desc
+
+local function sortData(entries)
+  local col   = currentSort.col or 3
+  local order = currentSort.order or -1
+  local key   = HEADER_COLS[col] and HEADER_COLS[col].name or "tsAdded"
+
+  local function sval(v) return (v and tostring(v):lower()) or "" end
+
+  table.sort(entries, function(a, b)
+    local av, bv = a[key], b[key]
+    if key == "tsAdded" then
+      av, bv = tonumber(av or 0) or 0, tonumber(bv or 0) or 0
+      return order == 1 and (av < bv) or (av > bv)
+    else
+      av, bv = sval(av), sval(bv)
+      if av == bv then return sval(a.name) < sval(b.name) end
+      return order == 1 and (av < bv) or (av > bv)
+    end
+  end)
 end
 
-local function buildRows(container)
-  local entries = Bin:GetEntries()
-  local scroll = AceGUI:Create("ScrollFrame")
-  scroll:SetLayout("Flow")
-  scroll:SetFullWidth(true)
-  scroll:SetFullHeight(true)
-  container:AddChild(scroll)
+local function getData()
+  local src = (Bin and Bin.GetEntries and Bin:GetEntries()) or {}
+  local t = {}
+  for i = 1, #src do t[i] = src[i] end
+  if #t > 1 then sortData(t) end
+  return t
+end
 
-  if #entries == 0 then
-    local lbl = AceGUI:Create("Label")
-    lbl:SetText("No players recorded this session.")
-    lbl:SetFullWidth(true)
-    scroll:AddChild(lbl)
-    return
-  end
+-- =============================================================================
+-- UI object
+-- =============================================================================
+local UI = { frame = nil, header = nil, scroll = nil }
 
-  for _, e in ipairs(entries) do
-    local row = AceGUI:Create("SimpleGroup"); row:SetLayout("Flow"); row:SetFullWidth(true)
+function UI:Refresh()
+  if not self.scroll then return end
+  local entries = getData()
+  self.scroll:SetData(entries)
+  self.scroll:Refresh()
+end
 
-    local cells = {
-      e.name or "-",
-      e.realm or "-",
-      e.guild or "-",
-      fmtDateTime(e.tsAdded),
-    }
-    for i=1,#cells do
-      local lab = AceGUI:Create("Label")
-      lab:SetText(cells[i])
-      lab:SetWidth(WIDTHS[i])
-      row:AddChild(lab)
+-- =============================================================================
+-- Scroll line factory & refresher (only mark lines InUse when data exists)
+-- =============================================================================
+local function createLine(scroll, index)
+  local line = CreateFrame("button", scroll:GetName() .. "Line" .. index, scroll, "BackdropTemplate")
+  line:SetSize(scroll:GetWidth() - 2, LINE_HEIGHT)
+  -- 1px spacing between rows
+  line:SetPoint("TOPLEFT", scroll, "TOPLEFT", 1, -((index - 1) * (LINE_HEIGHT + 1)) - 1)
+
+  line:SetBackdrop({bgFile = [[Interface\Tooltips\UI-Tooltip-Background]], tile = true, tileSize = 64})
+  line:SetBackdropColor(unpack(ROW_BG))
+
+  DF:Mixin(line, DF.HeaderFunctions)
+  line:SetScript("OnEnter", function(self) self:SetBackdropColor(unpack(ROW_BG_ENTER)) end)
+  line:SetScript("OnLeave", function(self) self:SetBackdropColor(unpack(ROW_BG)) end)
+
+  -- white row text
+  local nameText  = DF:CreateLabel(line, "", nil, "white")
+  local realmText = DF:CreateLabel(line, "", nil, "white")
+  local addedText = DF:CreateLabel(line, "", nil, "white")
+
+  local function actionsProvider(dd)
+    local items, full = {}, dd.__full
+    if not full then return items end
+
+    local function addToBlacklist()
+      local def = (AGS.db and AGS.db.profile and AGS.db.profile.settings and AGS.db.profile.settings.defaults)
+                  or { type = "N/A", category = "N/A" }
+      AGS.Aegis_AddPlayer(full, "Added from Bin", { type = def.type, category = def.category })
+      if Bin and Bin.RemoveFromSession then Bin:RemoveFromSession(full) end
+      if UI and UI.Refresh then UI:Refresh() end
     end
 
-    -- Actions cell
-    local cell = AceGUI:Create("SimpleGroup"); cell:SetLayout("Flow"); cell:SetWidth(WIDTHS[#WIDTHS])
-    local btnAdd = AceGUI:Create("Button"); btnAdd:SetText("+"); btnAdd:SetWidth(50)
-    btnAdd:SetCallback("OnClick", function()
-    local full = e.full
-    local def = AGS.db.profile.settings.defaults or { type = "N/A", category = "N/A" }
-    AGS.Aegis_AddPlayer(full, "Added from Bin", { type = def.type, category = def.category })
-    Bin:RemoveFromSession(full)  -- 🔹 remove from bin after adding
-    end)
-    cell:AddChild(btnAdd)
+    local function removeFromBin()
+      if Bin and Bin.RemoveFromSession then Bin:RemoveFromSession(full) end
+      if UI and UI.Refresh then UI:Refresh() end
+    end
 
-    local btnRem = AceGUI:Create("Button"); btnRem:SetText("-"); btnRem:SetWidth(50)
-    btnRem:SetCallback("OnClick", function()
-      Bin:RemoveFromSession(e.full)
-    end)
-    cell:AddChild(btnRem)
+    items[1] = {label = "Add to Blacklist", value = "add", onclick = addToBlacklist}
+    items[2] = {label = "Remove from Bin",  value = "remove", onclick = removeFromBin}
+    return items
+  end
 
-    row:AddChild(cell)
-    scroll:AddChild(row)
+  -- set dropdown width to exactly the Actions column width to eliminate the gap
+  local actionsDD = DF:CreateDropDown(
+    line, actionsProvider, 1, 115, 20, --ACTIONS_W, 20 instead of 100, 20
+    "$parentActionsDropdown" .. index, nil, DF:GetTemplate("dropdown", "OPTIONS_DROPDOWN_TEMPLATE")
+  )
+
+  -- header-aligned layout
+  line:AddFrameToHeaderAlignment(nameText)
+  line:AddFrameToHeaderAlignment(realmText)
+  line:AddFrameToHeaderAlignment(addedText)
+  line:AddFrameToHeaderAlignment(actionsDD)
+  line:AlignWithHeader(_G[FRAME_NAME].Header, "left")
+
+  -- store refs for refresh
+  line.NameText        = nameText
+  line.RealmText       = realmText
+  line.AddedText       = addedText
+  line.ActionsDropdown = actionsDD
+
+  return line
+end
+
+-- Only fetch a line when an entry exists (no empty rows)
+local function refreshLines(scroll, data, offset, totalLines)
+  for i = 1, totalLines do
+    local index = i + offset
+    local entry = data[index]
+
+    if entry then
+      local line = scroll:GetLine(i) -- marks InUse
+      line.NameText.text  = entry.name or "-"
+      line.RealmText.text = entry.realm or "-"
+      line.AddedText.text = fmtDateTime(entry.tsAdded)
+      line.ActionsDropdown.__full = entry.full
+      line.ActionsDropdown:Refresh()
+    end
+    -- when no entry: don't fetch the line; DF keeps it hidden
   end
 end
 
-local UIObj = {}
-function UIObj:Refresh()
-  if not ui then return end
-  ui:ReleaseChildren()
-  buildHeader(ui)
-  buildRows(ui)
-end
-
--- Public entry
+-- =============================================================================
+-- Public entry (global)
+-- =============================================================================
 function _G.AegisBin_Open()
-  if ui then
-    ui:Show()
-    UIObj:Refresh()
+  if UI.frame and UI.frame:IsShown() then
+    UI:Refresh()
     return
   end
-  ui = AceGUI:Create("Frame")
-  ui:SetTitle("Aegis - Bin")
-  ui:SetLayout("Fill")
-  ui:SetWidth(900)
-  ui:SetHeight(600)
-  if ui.frame and ui.frame.SetResizeBounds then ui.frame:SetResizeBounds(600, 360)
-  elseif ui.frame and ui.frame.SetMinResize then ui.frame:SetMinResize(600, 360) end
 
-  -- content container
-  local content = AceGUI:Create("SimpleGroup")
-  content:SetFullWidth(true)
-  content:SetFullHeight(true)
-  content:SetLayout("List")
-  ui:AddChild(content)
+  local f = DF:CreateSimplePanel(UIParent, FRAME_W, FRAME_H, "Aegis - Bin", FRAME_NAME)
+  f:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
 
-  -- attach UI object to content for refreshes
-  UIObj.container = content
-  function UIObj:Refresh()
-    content:ReleaseChildren()
-    buildHeader(content)
-    buildRows(content)
+  local function onHeaderClick(headerFrame, columnHeader, columnIndex, columnOrder)
+    currentSort.col   = columnIndex or currentSort.col
+    currentSort.order = columnOrder or (-(currentSort.order or -1))
+    UI:Refresh()
   end
 
-  -- initial fill
-  UIObj:Refresh()
+  local headerOpts = {}
+  for k, v in pairs(HEADER_OPTIONS) do headerOpts[k] = v end
+  headerOpts.header_click_callback = onHeaderClick
 
-  -- link UI back to Bin so Bin can ping Refresh()
-  if Bin and Bin._AttachUI then Bin:_AttachUI(UIObj) end
+  -- Header background stretches to the frame edges,
+  -- but column widths add up to SCROLL_W so the last column sits flush with the scrollbar.
+  local header = DF:CreateHeader(f, HEADER_COLS, headerOpts, FRAME_NAME .. "Header")
+  header:SetPoint("TOPLEFT",  f, "TOPLEFT",  2,  HEADER_Y)
+  header:SetPoint("TOPRIGHT", f, "TOPRIGHT", -2, HEADER_Y)
+  f.Header = header
+
+  -- ScrollBox: use Details sample sizing and offsets so the bar hugs the inner edge
+  local scroll = DF:CreateScrollBox(f, "$parentScroll", refreshLines, {}, SCROLL_W, SCROLL_H, LINE_AMOUNT, LINE_HEIGHT)
+  DF:ReskinSlider(scroll)
+  if scroll.ScrollBar and scroll.ScrollBar.AdjustPointsOffset then
+    scroll.ScrollBar:AdjustPointsOffset(-23, -1)
+  end
+
+  -- anchor to header exactly as in the sample
+  scroll:SetPoint("topleft",  f.Header, "bottomleft",  -1, -1)
+  scroll:SetPoint("topright", f.Header, "bottomright",  0, -1)
+
+  f.ScrollBox = scroll
+
+  -- create visible lines before first refresh
+  for i = 1, scroll.LineAmount do
+    scroll:CreateLine(createLine)
+  end
+
+  UI.frame, UI.header, UI.scroll = f, header, scroll
+
+  if Bin and Bin._AttachUI then Bin:_AttachUI(UI) end
+
+  UI:Refresh()
 end
