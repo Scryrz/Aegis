@@ -370,7 +370,8 @@ function AGS:InstallLFGNamePrefixer()
   if self.__LFGNameHooked then return end
   self.__LFGNameHooked = true
 
-  local PREFIX_PATTERN = "^|cffff2020BLACKLISTED|r%s*%-?%s*"
+  local BLACKLIST_PREFIX = "|cffff2020(!!!)|r"
+  local PREFIX_PATTERN = "^" .. BLACKLIST_PREFIX .. "%s*%-?%s*"
   local function stripPrefix(s) return (s or ""):gsub(PREFIX_PATTERN, "") end
 
   hooksecurefunc("LFGListSearchEntry_Update", function(entry)
@@ -390,8 +391,8 @@ function AGS:InstallLFGNamePrefixer()
     local base = stripPrefix(current)
 
     if isBL then
-      if current ~= ("|cffff2020BLACKLISTED|r - "..base) then
-        entry.Name:SetText("|cffff2020BLACKLISTED|r - "..base)
+      if current ~= (BLACKLIST_PREFIX .. " - "..base) then
+        entry.Name:SetText(BLACKLIST_PREFIX.. " - " ..base)
       end
     else
       if base ~= current then
