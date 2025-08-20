@@ -333,16 +333,24 @@ function _G.AegisBin_Open()
     scroll.ScrollBar:AdjustPointsOffset(-23, -1)
   end
 
-  -- enable mouse wheel
+  -- enable mouse wheel (CLAMPED to content)
   scroll:EnableMouseWheel(true)
   scroll:SetScript("OnMouseWheel", function(self, delta)
-    local step = self.LineHeight * 3
-    local cur = (self:GetOffsetFaux() or 0) * self.LineHeight
-    if delta < 0 then
-      self:OnVerticalScrollFaux(cur + step, self.LineHeight, self.Refresh)
-    else
-      self:OnVerticalScrollFaux(math.max(0, cur - step), self.LineHeight, self.Refresh)
+    local stepLines = 3
+    local currentOffset = tonumber(self:GetOffsetFaux()) or 0
+    local total = (self.data and #self.data) or 0
+    local visible = self.LineAmount or 0
+    local maxOffset = 0
+    if total > 0 and visible > 0 then
+      maxOffset = math.max(0, total - visible)
     end
+
+    local newOffset = currentOffset + (delta < 0 and stepLines or -stepLines)
+    if newOffset < 0 then newOffset = 0 end
+    if newOffset > maxOffset then newOffset = maxOffset end
+
+    -- Faux scroll expects pixel amount; multiply by line height
+    self:OnVerticalScrollFaux(newOffset * self.LineHeight, self.LineHeight, self.Refresh)
   end)
 
   -- anchor to header exactly as in the sample
