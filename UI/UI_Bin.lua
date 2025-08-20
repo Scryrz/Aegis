@@ -299,11 +299,14 @@ end
 -- Public entry (global)
 -- =============================================================================
 function _G.AegisBin_Open()
-  if UI.frame and UI.frame:IsShown() then
+  -- Reuse the existing frame & header on reopen; do not rebuild (Details pattern)
+  if UI.frame then
+    UI.frame:Show()
     UI:Refresh()
     return
   end
 
+  -- One-time build path (create frame, header, scroll, lines)
   local f = DF:CreateSimplePanel(UIParent, FRAME_W, FRAME_H, "Aegis - Bin", FRAME_NAME)
   f:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
 
