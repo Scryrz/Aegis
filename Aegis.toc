@@ -2,8 +2,8 @@
 ## Title: Aegis
 ## Notes: Protect yourself from unwanted players, guilds, and realms.
 ## Author: Ayr
-## Version: 1.2.0a
-## OptionalDeps: Ace3, LibDeformat-3.0, lib-st, LibDataBroker-1.1, LibDBIcon-1.0
+## Version: 1.2.5a
+## OptionalDeps: Ace3, LibDeformat-3.0, lib-st, LibDataBroker-1.1, LibDBIcon-1.0, LibDFramework-1.0
 ## X-Embeds: Ace3
 ## X-Category: Interface Enhancements
 ## SavedVariables: AegisDB

@@ -89,6 +89,7 @@ end
 function Bin:EndSession()
   -- Keep entries so the UI can display them when auto-opened after group leaves.
   -- Do NOT clear removed set yet (prevents accidental re-add if group bounces).
+  -- WIP
 end
 
 function Bin:IngestRosterSnapshot()
@@ -147,6 +148,17 @@ function Bin:_AttachUI(uiObj) self._ui = uiObj end
 
 -- Open window (delegates to UI module)
 function Bin:OpenFrame()
-  if _G.AegisBin_Open then _G.AegisBin_Open()
-  elseif AGS and AGS.Print then AGS:Print("Bin UI not loaded.") end
+  -- only open if there’s something to show
+  local entries = self:GetEntries()
+  if not entries or #entries == 0 then
+    AGS:Print("There are no bin entries to show.")
+    return
+  end
+
+  if _G.AegisBin_Open then
+    _G.AegisBin_Open()
+  elseif AGS and AGS.Print then
+    AGS:Print("Bin UI not loaded.")
+  end
 end
+
